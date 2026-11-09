@@ -1,0 +1,278 @@
+#!/usr/bin/env python3
+"""graphquery — deterministic queries over the code graph (SQLite), overlay-aware.
+
+Read verbs:
+  callers <name> | callees <name>
+  trace-back <sink-name|all> [--max N]
+  trace-fwd  <source-name|all> [--max N]
+  why-unreachable <name> [--max N]
+  cve-check <func-name>
+  overrides                         list the manual overlay (audit trail)
+  findings [tool|rule|all]          list imported CodeQL/semgrep findings + cross-check
+  explore [--seed S --explore-budget K]  seeded sample of the uncertainty frontier
+
+Write verbs (the self-correcting overlay — never mutates extracted facts):
+  annotate-add    <src> <dst> --reason R [--evidence f:line] [--mech m] [--author a]
+  annotate-refute <src> <dst> --reason R [--evidence f:line] [--author a]
+
+A node <name> matches its exact key or its simple name.
+Precedence/conflict rules live in WORKFLOW.md §6.5 and AGENT_NOTES §E.
+"""
+import sqlite3, sys, argparse, collections, datetime, random
+
+REFUTED = set()   # (src,dst) pairs refuted by the overlay
+
+def load_overlay(cur):
+    try:
+        cur.execute("SELECT src,dst FROM override WHERE action='refute'")
+        for s, d in cur.fetchall():
+            REFUTED.add((s, d))
+    except sqlite3.OperationalError:
+        pass  # override table may not exist on an old DB
+
+def resolve(cur, name):
+    cur.execute("SELECT key FROM node WHERE key=? OR name=?", (name, name))
+    return [r[0] for r in cur.fetchall()]
+
+def _added(cur, col_match, key):
+    try:
+        cur.execute(f"SELECT DISTINCT {'src' if col_match=='dst' else 'dst'},mechanism "
+                    f"FROM override WHERE action='add' AND {col_match}=?", (key,))
+        return [(r[0], r[1] or 'manual', 'manual-verified') for r in cur.fetchall()]
+    except sqlite3.OperationalError:
+        return []
+
+def preds(cur, key):
+    cur.execute("SELECT DISTINCT src,mechanism,provenance FROM edge WHERE dst=?", (key,))
+    rows = [r for r in cur.fetchall() if (r[0], key) not in REFUTED]
+    return rows + _added(cur, 'dst', key)
+
+def succs(cur, key):
+    cur.execute("SELECT DISTINCT dst,mechanism,provenance FROM edge WHERE src=?", (key,))
+    rows = [r for r in cur.fetchall() if (key, r[0]) not in REFUTED]
+    return rows + _added(cur, 'src', key)
+
+def is_source(cur, key):
+    cur.execute("SELECT kind,detail FROM source WHERE node=?", (key,)); return cur.fetchone()
+def is_boundary(cur, key):
+    cur.execute("SELECT reason FROM boundary WHERE node=?", (key,)); r = cur.fetchone()
+    return r[0] if r else None
+
+def sink_nodes(cur, name):
+    if name == 'all':
+        cur.execute("SELECT DISTINCT node FROM sink")
+    else:
+        cur.execute("SELECT DISTINCT s.node FROM sink s JOIN node n ON s.node=n.key "
+                    "WHERE s.api=? OR s.category=? OR n.name=? OR n.key=?", (name,)*4)
+    return [r[0] for r in cur.fetchall()]
+
+def source_nodes(cur, name):
+    if name == 'all':
+        cur.execute("SELECT DISTINCT node FROM source")
+    else:
+        cur.execute("SELECT DISTINCT so.node FROM source so JOIN node n ON so.node=n.key "
+                    "WHERE n.name=? OR n.key=? OR so.detail LIKE ?", (name, name, '%'+name+'%'))
+    return [r[0] for r in cur.fetchall()]
+
+def _bfs_back(cur, starts, maxdepth):
+    """Enumerate EVERY source reachable backward from starts (each once), with a
+    representative path source->...->sink. A parent map replaces a shared `seen`
+    set so one source's path never prunes another's (fixes under-reporting)."""
+    parent = {s: None for s in starts}
+    depth = {s: 0 for s in starts}
+    dq = collections.deque(starts)
+    src_hits = []; stops = []
+    while dq:
+        node = dq.popleft(); d = depth[node]
+        srcinfo = is_source(cur, node)
+        if srcinfo and node not in starts:
+            src_hits.append((node, srcinfo)); continue    # entry point: stop here
+        if d >= maxdepth: stops.append((node, 'max-depth')); continue
+        ps = preds(cur, node)
+        if not ps:
+            b = is_boundary(cur, node)
+            if not srcinfo: stops.append((node, ('boundary:' + b) if b else 'dead-end-leaf'))
+            continue
+        for p, mech, prov in ps:
+            if p not in parent:
+                parent[p] = (node, mech, prov); depth[p] = d + 1; dq.append(p)
+    paths = []
+    for node, srcinfo in src_hits:
+        chain = []; cur_n = node
+        while True:
+            pr = parent.get(cur_n)
+            if pr is None: chain.append(cur_n); break     # reached a start (the sink)
+            nxt, mech, prov = pr
+            chain.append(f"{cur_n} [{mech}/{prov}]"); cur_n = nxt
+        paths.append((chain, srcinfo))
+    return paths, stops
+
+def cmd_callers(cur, a):
+    for key in (resolve(cur, a.arg) or [a.arg]):
+        for src, mech, prov in preds(cur, key): print(f"{src}\t<-{mech}/{prov}--\t{key}")
+def cmd_callees(cur, a):
+    for key in (resolve(cur, a.arg) or [a.arg]):
+        for dst, mech, prov in succs(cur, key): print(f"{key}\t--{mech}/{prov}->\t{dst}")
+
+def cmd_trace_back(cur, a):
+    starts = sink_nodes(cur, a.arg)
+    if not starts: print("(no matching sinks)"); return
+    if a.seed is not None and a.arg == 'all':
+        random.Random(a.seed).shuffle(starts); starts = starts[:a.explore_budget]
+        print(f"# seeded sample: seed={a.seed}, {len(starts)} sinks this session (AGENT_NOTES §G)")
+    for s in starts:
+        paths, stops = _bfs_back(cur, [s], a.max)
+        print(f"\n### SINK {s}")
+        if paths:
+            print(f"  REACHABLE from {len(paths)} source(s):")
+            for path, src in paths:
+                manual = any('manual-verified' in step for step in path)
+                tag = "  [path uses a manual override]" if manual else ""
+                print(f"  - source [{src[0]}: {src[1]}]{tag}")
+                for step in path: print(f"       {step}")
+        else:
+            print("  NO STATIC PATH TO A SOURCE  (NOT proof of safety — verify, see AGENT_NOTES C)")
+            for node, why in stops[:8]: print(f"     stop: {node}  [{why}]")
+
+def cmd_trace_fwd(cur, a):
+    starts = source_nodes(cur, a.arg)
+    if not starts: print("(no matching sources)"); return
+    for s in starts[:50]:
+        seen=set(); dq=collections.deque([(s,[s],0)]); hit=[]
+        while dq:
+            node,path,d=dq.popleft()
+            if node in seen: continue
+            seen.add(node)
+            cur.execute("SELECT category,api FROM sink WHERE node=?", (node,)); sk=cur.fetchone()
+            if sk and len(path)>1: hit.append((node,sk,path)); continue
+            if d>=a.max: continue
+            for dst,mech,prov in succs(cur,node): dq.append((dst,path+[f"{dst} [{mech}/{prov}]"],d+1))
+        if hit:
+            print(f"\n### SOURCE {s}")
+            for node,sk,path in hit[:5]: print(f"  -> SINK {node} [{sk[0]}:{sk[1]}]  depth {len(path)-1}")
+
+def cmd_why(cur, a):
+    keys = resolve(cur, a.arg) or sink_nodes(cur, a.arg)
+    if not keys: print("(node not found)"); return
+    paths, stops = _bfs_back(cur, keys, a.max)
+    if paths: print(f"REACHABLE: {len(paths)} path(s) to a source exist.")
+    agg = collections.Counter(w.split(':')[0] for _, w in stops)
+    print("BFS stopped at:", dict(agg) or "(nothing — fully explored)")
+    for node, why in stops[:20]: print(f"  {node}\t[{why}]")
+
+def cmd_cve(cur, a):
+    name = a.arg; leaf = name.rsplit('.', 1)[-1]
+    print(f"CVE-CHECK for symbol: {name}")
+    try:
+        cur.execute("SELECT name,version,ecosystem,vulnerable,advisory FROM dependency "
+                    "WHERE ? LIKE name||'%' OR name LIKE ?", (name, '%'+name.split('.')[0]+'%'))
+        deps = cur.fetchall()
+    except sqlite3.OperationalError: deps = []
+    print("  dependencies:", deps or "(none recorded — run deps_cs.py + SCA)")
+    cur.execute("SELECT DISTINCT src FROM edge WHERE dst=?", (leaf,)); byname=[r[0] for r in cur.fetchall()]
+    print(f"  call sites (by name '{leaf}'): {len(byname)}")
+    for c in byname[:15]: print("    ", c)
+    print("  NOTE: 0 call sites is NOT 'not vulnerable' for data-driven CVEs")
+    print("        (Log4Shell, deser gadgets). See AGENT_NOTES D.")
+
+def cmd_explore(cur, a):
+    """Seeded, budgeted sample of the UNCERTAINTY FRONTIER — where the graph admits
+    it is unsure. Spend bounded off-graph reasoning here (AGENT_NOTES §G); record
+    wins via annotate-add so exploration compounds instead of repeating."""
+    rng = random.Random(a.seed); frontier = []
+    try:
+        cur.execute("SELECT node,reason FROM boundary")
+        frontier += [('boundary', r, n) for n, r in cur.fetchall()]
+    except sqlite3.OperationalError: pass
+    cur.execute("SELECT src,dst,mechanism,provenance FROM edge "
+                "WHERE provenance IN ('static-candidate','model-inferred')")
+    frontier += [('uncertain-edge', f'{m}/{p}', f'{s} -> {d}') for s, d, m, p in cur.fetchall()]
+    cur.execute("SELECT DISTINCT s.node,s.category,s.api FROM sink s "
+                "WHERE s.node NOT IN (SELECT node FROM source) "
+                "AND s.node NOT IN (SELECT dst FROM edge)")
+    frontier += [('isolated-sink', f'{c}:{a2}', n) for n, c, a2 in cur.fetchall()]
+    try:
+        cur.execute("SELECT DISTINCT node FROM finding WHERE node IS NOT NULL")
+        fnodes = {r[0] for r in cur.fetchall()}
+    except sqlite3.OperationalError: fnodes = set()
+    if not frontier:
+        print("(no uncertainty frontier — nothing flagged uncertain)"); return
+    rng.shuffle(frontier)
+    k = a.explore_budget
+    print(f"# exploration targets  seed={a.seed}  budget={k}  frontier_size={len(frontier)}")
+    print(f"# off-graph reasoning goes HERE, capped; record confirmed edges via annotate-add (AGENT_NOTES §G)")
+    for cat, why, node in frontier[:k]:
+        mark = "  <-- also engine-flagged" if node in fnodes else ""
+        print(f"[{cat}] {node}\t({why}){mark}")
+
+def cmd_overrides(cur, a):
+    try: cur.execute("SELECT action,src,dst,mechanism,reason,evidence,author,ts FROM override ORDER BY ts")
+    except sqlite3.OperationalError: print("(no override table)"); return
+    rows=cur.fetchall()
+    if not rows: print("(overlay empty)"); return
+    for act,src,dst,mech,reason,ev,auth,ts in rows:
+        print(f"[{act}] {src} -> {dst}  ({mech})  by {auth} {ts}\n    reason: {reason}\n    evidence: {ev}")
+
+def _annotate(cur, con, a, action):
+    if not a.arg2: sys.exit(f"{a.cmd} needs <src> <dst>")
+    if not a.reason: sys.exit(f"{a.cmd} requires --reason")
+    cur.execute("CREATE TABLE IF NOT EXISTS override(src TEXT,dst TEXT,action TEXT,"
+                "mechanism TEXT,reason TEXT,evidence TEXT,author TEXT,ts TEXT)")
+    ts = datetime.datetime.now().isoformat(timespec='seconds')
+    cur.execute("INSERT INTO override(src,dst,action,mechanism,reason,evidence,author,ts) "
+                "VALUES(?,?,?,?,?,?,?,?)",
+                (a.arg, a.arg2, action, a.mech, a.reason, a.evidence, a.author, ts))
+    con.commit()
+    print(f"[{action}] {a.arg} -> {a.arg2} recorded (author={a.author}, {ts}).")
+    print("  Fact layer untouched; re-run extractors anytime, this overlay persists.")
+
+def cmd_findings(cur, a):
+    try:
+        if a.arg in (None, 'all'):
+            cur.execute("SELECT tool,rule,severity,file,line,message,node FROM finding")
+        else:
+            cur.execute("SELECT tool,rule,severity,file,line,message,node FROM finding "
+                        "WHERE tool=? OR rule LIKE ? OR node LIKE ?", (a.arg, '%'+a.arg+'%', '%'+a.arg+'%'))
+        rows = cur.fetchall()
+    except sqlite3.OperationalError:
+        print("(no finding table — import engine results first)"); return
+    if not rows: print("(no findings)"); return
+    for tool, rule, sev, f, line, msg, node in rows:
+        print(f"[{tool}:{sev}] {rule}  {f}:{line}")
+        if msg: print(f"    {msg.strip()[:160]}")
+        if node:
+            paths, _ = _bfs_back(cur, [node], a.max)
+            if paths:
+                print(f"    node {node}  (regex graph ALSO reaches a source)")
+            else:
+                print(f"    node {node}  ENGINE-FLAGGED but regex graph finds NO path")
+                print(f"      -> likely regex-tier false-negative (L1); trust the engine (precedence §6.5)")
+
+READ = {'callers': cmd_callers, 'callees': cmd_callees, 'trace-back': cmd_trace_back,
+        'trace-fwd': cmd_trace_fwd, 'why-unreachable': cmd_why, 'cve-check': cmd_cve,
+        'overrides': cmd_overrides, 'findings': cmd_findings, 'explore': cmd_explore}
+WRITE = {'annotate-add': 'add', 'annotate-refute': 'refute'}
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument('--db', default='graph.db')
+    ap.add_argument('--max', type=int, default=25)
+    ap.add_argument('--seed', type=int, default=None,
+                    help='reproducible stochastic ordering; LOG it (AGENT_NOTES §G)')
+    ap.add_argument('--explore-budget', type=int, default=12, dest='explore_budget',
+                    help='token cap: max frontier items / seeded sinks per session')
+    ap.add_argument('--reason', default=''); ap.add_argument('--evidence', default='')
+    ap.add_argument('--author', default='agent'); ap.add_argument('--mech', default='manual')
+    ap.add_argument('cmd', choices=list(READ) + list(WRITE))
+    ap.add_argument('arg', nargs='?'); ap.add_argument('arg2', nargs='?')
+    a = ap.parse_args()
+    con = sqlite3.connect(a.db); cur = con.cursor()
+    load_overlay(cur)
+    if a.cmd in WRITE: _annotate(cur, con, a, WRITE[a.cmd])
+    else:
+        if a.arg is None and a.cmd not in ('overrides', 'explore'): sys.exit(f"{a.cmd} needs an argument")
+        READ[a.cmd](cur, a)
+    con.close()
+
+if __name__ == '__main__':
+    main()

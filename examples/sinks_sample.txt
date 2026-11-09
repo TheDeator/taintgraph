@@ -1,0 +1,7 @@
+# Sink catalog FORMAT:  category:api   (one per line; # comments ignored)
+# Build the full, tuned catalog per language privately. A few illustrative entries:
+sqli:ExecuteSqlRaw
+cmdi:Process.Start
+deser:BinaryFormatter.Deserialize
+path:File.ReadAllText
+ssrf:HttpClient

@@ -1,0 +1,27 @@
+# Per-project artifacts — contain client code / data, never committed
+*.db
+*.sqlite
+graph.db
+/work/
+/engagements/
+codeql-db/
+*.sarif
+semgrep-*.json
+*.trace
+# scratch
+*.log
+__pycache__/
+*.pyc
+
+# local dev notes (never pushed)
+DEVELOPMENT_LOG.md
+
+# --- Private: operational know-how / offensive / sensitive / tunable — NEVER pushed ---
+# The methodology (docs/) is public; the working engine is built from docs/EXTRACTORS.md.
+toolkit/extractors/*.py
+toolkit/build-*.sh
+toolkit/sinks/*.txt
+toolkit/semgrep-rules/*.yml
+toolkit/codeql/callgraph.ql
+toolkit/codeql/qlpack.yml
+toolkit/codeql/*.lock.yml
