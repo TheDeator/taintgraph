@@ -41,10 +41,13 @@ across future similar-stack projects. Never quote a "not reachable" from a graph
 you have not sanity-checked (see §C in AGENT_NOTES).
 
 ## Customize for this project (first run)
-The query engine (`toolkit/graphquery`) and importers SHIP; the **extractors, sink
-catalogs and taint rules do NOT** (operational/offensive, kept private). So on a
-fresh clone there is nothing under `toolkit/extractors/` to run yet — that is by
-design. Your first job is to build them:
+The query engine (`toolkit/graphquery`) and importers SHIP, plus ONE real reference
+extractor (`examples/reference_extractor_py.py`, stdlib `ast`); the **tuned per-language
+extractors, sink catalogs and taint rules do NOT** (operational/offensive, kept
+private). So `toolkit/extractors/` is empty on a fresh clone by design — but you are
+NOT starting from zero: run the Python reference on a Python target first to see the
+whole pipeline (nodes/edges/routes/sinks/boundaries → `graphquery`) work end-to-end,
+then build the project's extractors using it as the pattern:
 1. Recon TWO kinds of mechanism:
    - **dispatch mechanisms** (for edges): MediatR? Spring DI? gRPC? reflection?
    - **entry-point mechanisms** (for sources): MVC routes? Razor Pages
@@ -55,9 +58,9 @@ design. Your first job is to build them:
    only from a Razor Page or a background service shows as "not reachable").
    Extend the source extractor to cover every entry type the project uses BEFORE
    trusting any reachability reduction.
-2. WRITE the `*_<lang>` extractor(s) per docs/EXTRACTORS.md, starting from
-   `examples/extractor_skeleton.py` (there is no reference extractor to copy — it
-   is not shipped). Prioritise the source anchor + the framework's type-bound
+2. WRITE the `*_<lang>` extractor(s) per docs/EXTRACTORS.md, copying the pattern in
+   `examples/reference_extractor_py.py` (a working `ast`-based extractor) or the barer
+   `examples/extractor_skeleton.py`. Prioritise the source anchor + the framework's type-bound
    "virtual edge" (MediatR / .NET DI interface->impl / Spring impl — specified in
    docs/EXTRACTORS.md) — that is what beats grep.
 3. Build the sink catalog `sinks/<lang>.txt` and tune sources for this project's

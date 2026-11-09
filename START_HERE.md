@@ -43,10 +43,15 @@ language **extractors, sink catalogs and taint rules are NOT** — they are
 operational/offensive/tunable tooling kept private. So on a fresh clone there is
 nothing to "run" under `toolkit/extractors/` yet; that is expected.
 
-The designed first step (what the skill makes your agent do) is to **write the
-`*_<lang>` extractor(s)** following [`docs/EXTRACTORS.md`](docs/EXTRACTORS.md),
-starting from [`examples/extractor_skeleton.py`](examples/extractor_skeleton.py)
-and [`examples/build-graph-template.sh`](examples/build-graph-template.sh). The
+You are NOT starting from zero. Run the shipped reference extractor
+[`examples/reference_extractor_py.py`](examples/reference_extractor_py.py) (stdlib
+`ast`, no deps) on any Python target to watch the whole pipeline work first:
+`python3 examples/reference_extractor_py.py SRC | sqlite3 graph.db`, then query it with
+`toolkit/graphquery`. The designed first step (what the skill makes your agent do) is
+then to **write the `*_<lang>` extractor(s)** following
+[`docs/EXTRACTORS.md`](docs/EXTRACTORS.md), copying the reference's pattern (or the
+barer [`examples/extractor_skeleton.py`](examples/extractor_skeleton.py)) and
+[`examples/build-graph-template.sh`](examples/build-graph-template.sh). The
 methodology is proven on C#/.NET and Java/Spring; the code to reproduce it is
 yours to build (that is also what keeps the trace accurate and tuned to your
 target).

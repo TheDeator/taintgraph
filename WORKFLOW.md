@@ -121,8 +121,11 @@ python toolkit/load_sinks_cs.py sinks/cs.txt SRC | sqlite3 graph.db
   (answer space bounded to real candidates → no out-of-set hallucination)
 
 ### 5.3 Taint layer (Phase 3 — optional high-fidelity tier, degrades gracefully)
-Engine results import into the same graph (`finding` table) and OUTRANK the regex
-tier (precedence §6.5). If an engine is not installed, skip the step — you stay on
+Engine results import into the same graph (`finding` table) and carry higher trust
+in the precedence ladder (§6.5). NOTE: that precedence is a **reading discipline**,
+not a weight the engine computes — `graphquery` traversal treats every edge equally
+and only prints the provenance tag; the one precedence it DOES enforce is the manual
+overlay (refute/add). If an engine is not installed, skip the step — you stay on
 the regex tier (see docs/LIMITATIONS.md; treat "not reachable" with more care).
 - semgrep (any stack, incl. PHP): `toolkit/build-semgrep.sh SRC graph.db [lang]`
 - CodeQL (C#/Java/Python, needs build): `toolkit/build-codeql-cs.sh SRC graph.db`
@@ -211,6 +214,13 @@ against the actual code is truth.
 
 A higher tier does **not** silently override a lower one — CodeQL has
 false-negatives too. A disagreement is a flag to verify, never an auto-resolve.
+
+**This ladder is NOT computed by `graphquery`.** Traversal (`trace-back`/`trace-fwd`/
+`meet`) is unweighted: it walks every edge equally and prints each edge's
+`mechanism/provenance` tag so YOU apply the ladder when reading. The only precedence
+the engine enforces is the overlay — a `refute`d edge is dropped from traversal, an
+`add`ed edge is injected as `manual-verified`. So there is deliberately no
+"backbone-only (static-exact)" query mode; filter by the printed tags yourself.
 
 **Conflict rules**
 - Graph says *reachable*, code review shows a real guard/sanitizer/dead code →

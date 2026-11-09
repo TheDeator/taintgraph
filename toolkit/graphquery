@@ -4,7 +4,8 @@
 Read verbs:
   callers <name> | callees <name>
   trace-back <sink-name|all> [--max N]
-  trace-fwd  <source-name|all> [--max N]
+  trace-fwd  <source-name|all> [--max N]   ('all' analyses EVERY source unless --seed)
+  meet <sink-name> <source-name> [--max N] meet-in-the-middle: junction nodes on a path
   why-unreachable <name> [--max N]
   cve-check <func-name>
   overrides                         list the manual overlay (audit trail)
@@ -137,7 +138,15 @@ def cmd_trace_back(cur, a):
 def cmd_trace_fwd(cur, a):
     starts = source_nodes(cur, a.arg)
     if not starts: print("(no matching sources)"); return
-    for s in starts[:50]:
+    # §G discipline, symmetric with trace-back: truncation must be seeded + ANNOUNCED,
+    # never silent. Default = analyse EVERY source (no hidden cap that drops sinks).
+    if a.seed is not None and a.arg == 'all':
+        random.Random(a.seed).shuffle(starts); starts = starts[:a.explore_budget]
+        print(f"# seeded sample: seed={a.seed}, {len(starts)} source(s) this session (AGENT_NOTES §G)")
+    elif a.arg == 'all' and len(starts) > a.explore_budget:
+        print(f"# trace-fwd all: analysing ALL {len(starts)} sources (no silent cap). "
+              f"For a bounded, reproducible sample use --seed (AGENT_NOTES §G).")
+    for s in starts:
         seen=set(); dq=collections.deque([(s,[s],0)]); hit=[]
         while dq:
             node,path,d=dq.popleft()
@@ -149,7 +158,7 @@ def cmd_trace_fwd(cur, a):
             for dst,mech,prov in succs(cur,node): dq.append((dst,path+[f"{dst} [{mech}/{prov}]"],d+1))
         if hit:
             print(f"\n### SOURCE {s}")
-            for node,sk,path in hit[:5]: print(f"  -> SINK {node} [{sk[0]}:{sk[1]}]  depth {len(path)-1}")
+            for node,sk,path in hit: print(f"  -> SINK {node} [{sk[0]}:{sk[1]}]  depth {len(path)-1}")
 
 def cmd_why(cur, a):
     keys = resolve(cur, a.arg) or sink_nodes(cur, a.arg)
@@ -159,6 +168,32 @@ def cmd_why(cur, a):
     agg = collections.Counter(w.split(':')[0] for _, w in stops)
     print("BFS stopped at:", dict(agg) or "(nothing — fully explored)")
     for node, why in stops[:20]: print(f"  {node}\t[{why}]")
+
+def cmd_meet(cur, a):
+    """Meet-in-the-middle (principle #4): the nodes on some <source> -> <sink> path,
+    i.e. the intersection of the sink's backward closure (ancestors) and the source's
+    forward closure (descendants). Non-empty meet => a static path EXISTS; the junction
+    nodes are where to read first. Cheaper than enumerating every path."""
+    if not a.arg2: sys.exit("meet needs two args: meet <sink-name|key> <source-name|key>")
+    sinks = sink_nodes(cur, a.arg) or resolve(cur, a.arg)
+    sources = source_nodes(cur, a.arg2) or resolve(cur, a.arg2)
+    if not sinks: print("(no matching sink)"); return
+    if not sources: print("(no matching source)"); return
+    def closure(seeds, step):
+        seen = set(seeds); depth = {s: 0 for s in seeds}; dq = collections.deque(seeds)
+        while dq:
+            n = dq.popleft()
+            if depth[n] >= a.max: continue
+            for nxt, _m, _p in step(cur, n):
+                if nxt not in seen: seen.add(nxt); depth[nxt] = depth[n] + 1; dq.append(nxt)
+        return seen
+    meet = closure(sinks, preds) & closure(sources, succs)
+    if not meet:
+        print(f"NO STATIC MEET between source '{a.arg2}' and sink '{a.arg}' within depth {a.max}.")
+        print("  (NOT proof of safety — an unmodelled edge may bridge them; verify, AGENT_NOTES C)")
+        return
+    print(f"MEET: {len(meet)} node(s) on a source->sink path (a static path EXISTS):")
+    for n in sorted(meet): print(f"  {n}")
 
 def cmd_cve(cur, a):
     name = a.arg; leaf = name.rsplit('.', 1)[-1]
@@ -249,8 +284,9 @@ def cmd_findings(cur, a):
                 print(f"      -> likely regex-tier false-negative (L1); trust the engine (precedence §6.5)")
 
 READ = {'callers': cmd_callers, 'callees': cmd_callees, 'trace-back': cmd_trace_back,
-        'trace-fwd': cmd_trace_fwd, 'why-unreachable': cmd_why, 'cve-check': cmd_cve,
-        'overrides': cmd_overrides, 'findings': cmd_findings, 'explore': cmd_explore}
+        'trace-fwd': cmd_trace_fwd, 'meet': cmd_meet, 'why-unreachable': cmd_why,
+        'cve-check': cmd_cve, 'overrides': cmd_overrides, 'findings': cmd_findings,
+        'explore': cmd_explore}
 WRITE = {'annotate-add': 'add', 'annotate-refute': 'refute'}
 
 def main():

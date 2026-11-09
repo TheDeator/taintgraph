@@ -127,14 +127,18 @@ follows [`docs/EXTRACTORS.md`](docs/EXTRACTORS.md).
 
 **Shipped and runnable:** the query engine `toolkit/graphquery`, the result
 importers (`toolkit/import_findings.py`, `toolkit/import_codeql_graph.py`), the
-graph schema `docs/SCHEMA.sql`, and `examples/` (a skeleton extractor, a build
-template, a sink-catalog sample, an example session).
+graph schema `docs/SCHEMA.sql`, a **real reference extractor**
+(`examples/reference_extractor_py.py`, stdlib `ast` — run it on any Python tree and the
+whole pipeline works end-to-end), a build template, a sink-catalog sample and an
+example session. Tests: `python3 -m unittest discover -s tests`.
 
 **Build-it-yourself — NOT shipped by design (operational / offensive / tunable):**
-the language **extractors** (`*_<lang>.py`), the **sink catalogs**, the **taint
-rules**, and the orchestration `build-*.sh`. You build the extractors once against
-the plug-in contract in [`docs/EXTRACTORS.md`](docs/EXTRACTORS.md), starting from
-[`examples/extractor_skeleton.py`](examples/extractor_skeleton.py) and
+the **tuned** per-language **extractors** (`*_<lang>.py`), the **sink catalogs**, the
+**taint rules**, and the orchestration `build-*.sh`. You build the extractors once
+against the plug-in contract in [`docs/EXTRACTORS.md`](docs/EXTRACTORS.md), copying the
+working pattern in
+[`examples/reference_extractor_py.py`](examples/reference_extractor_py.py) (or the barer
+[`examples/extractor_skeleton.py`](examples/extractor_skeleton.py)) and
 [`examples/build-graph-template.sh`](examples/build-graph-template.sh). Once your
 extractors produce the graph, the shipped `graphquery` queries it. So: nothing
 under `toolkit/extractors/`, `toolkit/sinks/` or `toolkit/semgrep-rules/` is in
@@ -158,7 +162,8 @@ toolkit/                 Engine (shipped) + your assets (build-it-yourself)
   codeql/README.md       CodeQL tier notes                       [shipped]
   extractors/            *_<lang>.py you build (EXTRACTORS.md)    [NOT shipped]
   sinks/ semgrep-rules/  your catalogs / taint rules             [NOT shipped]
-examples/                skeleton extractor, build template, sinks sample, session
+examples/                reference_extractor_py.py (runnable), skeleton, build template, sinks, session
+tests/                   unit tests for graphquery + the reference extractor
 ```
 
 ## Status

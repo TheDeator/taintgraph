@@ -140,7 +140,8 @@ CodeQL's type-resolved call graph exported into the SAME schema via
   coverage, not an L1 miss).
 
 The agent still queries the cheap `graphquery`; CodeQL is the precompute backend
-whose precise edges rank above the regex tier (§6.5).
+whose precise edges carry higher trust in the precedence ladder (§6.5) — a reading
+discipline the agent applies, not a weight `graphquery` traversal computes.
 
 **Bug found & fixed in-session:** backward BFS was short-circuiting at any boundary
 node, so a sink that itself used reflection was wrongly called "not reachable"

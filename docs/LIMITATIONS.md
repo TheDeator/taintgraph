@@ -27,6 +27,11 @@ page is why. Entries: what · impact · how to detect · status.
   by a type/symbol pass (Roslyn/CodeQL) on top. tree-sitter fixes the parsing half
   (fewer mis-keyed/missed nodes, L4) and is the better substrate for `static-exact`
   facts; it does not by itself make bare-name callees type-resolved.
+  PARTIAL PROGRESS (shipped): `examples/reference_extractor_py.py` uses the stdlib `ast`
+  (a real parser, not regex) and resolves intra-project direct calls by name across
+  files — so for Python it already recovers the deep cross-file chains the C# regex tier
+  under-connects. It still resolves by NAME, not receiver type, so L2 (collision →
+  over-connect) applies; full type resolution remains the Roslyn/CodeQL job.
 - **L2 — bare-name over-merge.** Two methods sharing a name collapse to one key →
   `callers/callees` **over-connect** (false positives, noise).
   Impact: could inflate traces and *cost tokens* — in tension with goal #2.
@@ -89,6 +94,10 @@ page is why. Entries: what · impact · how to detect · status.
   Not unique to this framework: CodeQL / semgrep taint also does NOT cross the
   persistence boundary without custom modelling — second-order through a datastore
   is a hard, industry-wide problem.
+  ROADMAP PRIORITY (2026-11-09): this is now the **top** development priority, ranked
+  ABOVE adding more languages — L8 is the automatic-recall CEILING (it caps recall for
+  every language already supported), whereas a new language only adds breadth. See
+  DEVELOPMENT_LOG §5 priority order.
   DEVELOPMENT DIRECTION (planned, to solve later): a "store-mediated virtual edge"
   extractor — emit write-site and read-site nodes KEYED BY STORAGE LOCATION
   (table.column, cache key, config key), then connect matching keys as

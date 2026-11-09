@@ -77,8 +77,9 @@ CREATE INDEX IF NOT EXISTS i_ovr_src ON override(src);
 CREATE INDEX IF NOT EXISTS i_ovr_dst ON override(dst);
 
 -- High-fidelity engine results (CodeQL/semgrep), imported by toolkit/import_findings.py.
--- They outrank the regex graph (precedence WORKFLOW.md §6.5); `node` links a finding
--- to the enclosing method when resolvable, enabling cross-check against the graph.
+-- They carry higher trust in the precedence ladder (WORKFLOW.md §6.5) — a READING
+-- discipline, not a weight graphquery computes (traversal is unweighted). `node` links
+-- a finding to the enclosing method when resolvable, enabling cross-check vs the graph.
 CREATE TABLE IF NOT EXISTS finding(
   tool       TEXT,   -- codeql | semgrep
   rule       TEXT,
